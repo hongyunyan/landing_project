@@ -1,5 +1,5 @@
-/* parse.go 用于解析标准的单条 Unified Log Format 成 标准的json格式，目前只支持解析合法的单条 log 条目，不进行错误处理
-目前现设定为string 输入， json 输出
+/*
+parse.go 用于解析标准的单条 Unified Log Format 成 标准的json格式，目前只支持解析合法的单条 log 条目，不进行错误处理
 */
 
 package main
@@ -93,172 +93,6 @@ func ParseLogHeaderSection(log string, unified_log *UnifiedLog) int {
 
 	return begin_index
 }
-
-/*
-// 尝试先把 log 转成 rune 的 array 模式，然后用 index 遍历的方式来做 parse，benchmark 测下来还不如原来的方法
-func ParseLogWithRuneArray(log string) UnifiedLog {
-	var unified_log UnifiedLog = UnifiedLog{
-		LogHeaderSection:  LogHeaderSection{DataTime: "", Level: "", SourceFile: "", LineNumber: -1},
-		LogMessageSection: "",
-		LogFieldsSection:  []map[string]string{},
-	}
-
-	// 用直接找 index 的方式处理前面的 Header 部分
-	new_index := ParseLogHeaderSection(log, &unified_log)
-
-	if new_index > len(log) {
-		return unified_log
-	}
-	log = log[new_index:]
-
-	// 用 part 来标记目前 search 的是哪个部分的字段， 1/2/3/4/5 分别对应了 DataTime/Level/SourceFile/LineNumber/Message/Fields, 其中 5 可以在最后反复出现
-	part := 3 // 从0 开始的话就是不用前面的直接parse 前三个部分
-
-	if log[1] != '"' {
-		//message 部分，如果不是"开头的，那就直接找后续的]
-		message_end_index := strings.Index(log, "]")
-		unified_log.LogMessageSection = log[1:message_end_index]
-		if message_end_index+2 < len(log) {
-			log = log[message_end_index+2:]
-			part = 4
-		} else { //如果没有 field 部分，就直接对 log 置空
-			return unified_log
-		}
-	}
-
-	log_rune_array := []rune(log)
-	size := len(log_rune_array)
-
-	var content strings.Builder
-	var key_content strings.Builder
-	var value_content strings.Builder
-
-	var key string
-
-	is_slash := false // 用于 part 4/5 中区分 \
-
-	is_search_for_key := true
-
-	//直接从 cur_index = 2 开始，因为0是[,1是”
-	cur_index := 0
-	begin_index := -1
-	search_state := -1
-
-	if part == 3 {
-		cur_index = 2
-		begin_index = 2
-		search_state = 1
-		part = 4
-	}
-
-	for cur_index < size {
-		if search_state == -1 {
-			// 进入识别状态
-			if log_rune_array[cur_index] == '[' {
-				if part < 5 {
-					part += 1
-				}
-				begin_index = cur_index + 1
-				search_state = 0
-				is_search_for_key = true
-			}
-			cur_index += 1
-		} else {
-			if part == 4 {
-				//因为前面已经处理过了，所以这边的message肯定是带双引号的，所以不用额外判断了
-				//如果里面有 slash 出现过，就必须要拿出来重新写过，否则就不需要
-				if log_rune_array[cur_index] == '"' && !is_slash {
-					// 如果是前面没有有效的\的"， 就说明到了结尾
-					if content.Len() == 0 { // 如果content是空的，就说明中途没有 slash，所以也没有重写过，直接拿对应的字符串就可以
-						unified_log.LogMessageSection = log[begin_index:cur_index]
-					} else {
-						content.WriteString(log[begin_index:cur_index])
-						unified_log.LogMessageSection = content.String()
-					}
-					search_state = -1
-				} else if log_rune_array[cur_index] == '\\' && !is_slash {
-					// 如果前面的不是 slash， 那就说明这是个转义的，要把前面这段先写入content
-					content.WriteString(log[begin_index:cur_index])
-					is_slash = true
-					begin_index = cur_index + 1
-				} else {
-					// 其他情况都只需要把is_slash 设为 false 就可以
-					is_slash = false
-				}
-			} else if part == 5 {
-				if search_state == 0 {
-					if log_rune_array[cur_index] == '=' { // 这边特殊处理一下 =
-						cur_index += 1
-						continue
-					} else if log_rune_array[cur_index] == '"' {
-						begin_index = cur_index + 1
-						is_slash = false
-						search_state = 1
-					} else {
-						// 如果没有引号，那就直接搜索就可
-						//["TiKV Started"] [ddl_job_id=1]
-						rest_log := log[cur_index:]
-						if is_search_for_key {
-							end_index := strings.Index(rest_log, "=")
-							key = rest_log[:end_index]
-
-							cur_index += end_index
-							search_state = 0
-							is_search_for_key = false
-						} else {
-							end_index := strings.Index(rest_log, "]")
-
-							key_value_pair := make(map[string]string)
-							key_value_pair[key] = rest_log[:end_index]
-							unified_log.LogFieldsSection = append(unified_log.LogFieldsSection, key_value_pair)
-
-							search_state = -1
-							cur_index += end_index
-						}
-					}
-				} else {
-					if log_rune_array[cur_index] == '"' && !is_slash {
-						// 如果遇到 前面没有转义符号的 "
-						if is_search_for_key {
-							key_content.WriteString(log[begin_index:cur_index])
-							key = key_content.String()
-							is_search_for_key = false
-							search_state = 0
-						} else {
-							key_value_pair := make(map[string]string)
-							if value_content.Len() == 0 {
-								key_value_pair[key] = log[begin_index:cur_index]
-							} else {
-								value_content.WriteString(log[begin_index:cur_index])
-								key_value_pair[key] = value_content.String()
-							}
-							unified_log.LogFieldsSection = append(unified_log.LogFieldsSection, key_value_pair)
-							search_state = -1
-							key_content.Reset()
-							value_content.Reset()
-						}
-					} else if log_rune_array[cur_index] == '\\' && !is_slash {
-						// 如果前面的不是 slash， 那就说明这是个转义的，要把前面这段先写入content
-						if is_search_for_key {
-							key_content.WriteString(log[begin_index:cur_index])
-						} else {
-							value_content.WriteString(log[begin_index:cur_index])
-						}
-
-						is_slash = true
-						begin_index = cur_index + 1
-					} else {
-						// 其他情况都只需要把is_slash 设为 false 就可以
-						is_slash = false
-					}
-				}
-			}
-			cur_index += 1
-		}
-	}
-	return unified_log
-}
-*/
 
 // 这边用一个从头遍历的方式来进行处理Parse，如果遇到转义，就进行判断，只有 \ 和 " 是需要 额外的转义符号
 func ParseLog(log string) UnifiedLog {
@@ -476,3 +310,169 @@ func main() {
 	}
 
 }
+
+/*
+// 尝试先把 log 转成 rune 的 array 模式，然后用 index 遍历的方式来做 parse，benchmark 测下来还不如原来的方法
+func ParseLogWithRuneArray(log string) UnifiedLog {
+	var unified_log UnifiedLog = UnifiedLog{
+		LogHeaderSection:  LogHeaderSection{DataTime: "", Level: "", SourceFile: "", LineNumber: -1},
+		LogMessageSection: "",
+		LogFieldsSection:  []map[string]string{},
+	}
+
+	// 用直接找 index 的方式处理前面的 Header 部分
+	new_index := ParseLogHeaderSection(log, &unified_log)
+
+	if new_index > len(log) {
+		return unified_log
+	}
+	log = log[new_index:]
+
+	// 用 part 来标记目前 search 的是哪个部分的字段， 1/2/3/4/5 分别对应了 DataTime/Level/SourceFile/LineNumber/Message/Fields, 其中 5 可以在最后反复出现
+	part := 3 // 从0 开始的话就是不用前面的直接parse 前三个部分
+
+	if log[1] != '"' {
+		//message 部分，如果不是"开头的，那就直接找后续的]
+		message_end_index := strings.Index(log, "]")
+		unified_log.LogMessageSection = log[1:message_end_index]
+		if message_end_index+2 < len(log) {
+			log = log[message_end_index+2:]
+			part = 4
+		} else { //如果没有 field 部分，就直接对 log 置空
+			return unified_log
+		}
+	}
+
+	log_rune_array := []rune(log)
+	size := len(log_rune_array)
+
+	var content strings.Builder
+	var key_content strings.Builder
+	var value_content strings.Builder
+
+	var key string
+
+	is_slash := false // 用于 part 4/5 中区分 \
+
+	is_search_for_key := true
+
+	//直接从 cur_index = 2 开始，因为0是[,1是”
+	cur_index := 0
+	begin_index := -1
+	search_state := -1
+
+	if part == 3 {
+		cur_index = 2
+		begin_index = 2
+		search_state = 1
+		part = 4
+	}
+
+	for cur_index < size {
+		if search_state == -1 {
+			// 进入识别状态
+			if log_rune_array[cur_index] == '[' {
+				if part < 5 {
+					part += 1
+				}
+				begin_index = cur_index + 1
+				search_state = 0
+				is_search_for_key = true
+			}
+			cur_index += 1
+		} else {
+			if part == 4 {
+				//因为前面已经处理过了，所以这边的message肯定是带双引号的，所以不用额外判断了
+				//如果里面有 slash 出现过，就必须要拿出来重新写过，否则就不需要
+				if log_rune_array[cur_index] == '"' && !is_slash {
+					// 如果是前面没有有效的\的"， 就说明到了结尾
+					if content.Len() == 0 { // 如果content是空的，就说明中途没有 slash，所以也没有重写过，直接拿对应的字符串就可以
+						unified_log.LogMessageSection = log[begin_index:cur_index]
+					} else {
+						content.WriteString(log[begin_index:cur_index])
+						unified_log.LogMessageSection = content.String()
+					}
+					search_state = -1
+				} else if log_rune_array[cur_index] == '\\' && !is_slash {
+					// 如果前面的不是 slash， 那就说明这是个转义的，要把前面这段先写入content
+					content.WriteString(log[begin_index:cur_index])
+					is_slash = true
+					begin_index = cur_index + 1
+				} else {
+					// 其他情况都只需要把is_slash 设为 false 就可以
+					is_slash = false
+				}
+			} else if part == 5 {
+				if search_state == 0 {
+					if log_rune_array[cur_index] == '=' { // 这边特殊处理一下 =
+						cur_index += 1
+						continue
+					} else if log_rune_array[cur_index] == '"' {
+						begin_index = cur_index + 1
+						is_slash = false
+						search_state = 1
+					} else {
+						// 如果没有引号，那就直接搜索就可
+						//["TiKV Started"] [ddl_job_id=1]
+						rest_log := log[cur_index:]
+						if is_search_for_key {
+							end_index := strings.Index(rest_log, "=")
+							key = rest_log[:end_index]
+
+							cur_index += end_index
+							search_state = 0
+							is_search_for_key = false
+						} else {
+							end_index := strings.Index(rest_log, "]")
+
+							key_value_pair := make(map[string]string)
+							key_value_pair[key] = rest_log[:end_index]
+							unified_log.LogFieldsSection = append(unified_log.LogFieldsSection, key_value_pair)
+
+							search_state = -1
+							cur_index += end_index
+						}
+					}
+				} else {
+					if log_rune_array[cur_index] == '"' && !is_slash {
+						// 如果遇到 前面没有转义符号的 "
+						if is_search_for_key {
+							key_content.WriteString(log[begin_index:cur_index])
+							key = key_content.String()
+							is_search_for_key = false
+							search_state = 0
+						} else {
+							key_value_pair := make(map[string]string)
+							if value_content.Len() == 0 {
+								key_value_pair[key] = log[begin_index:cur_index]
+							} else {
+								value_content.WriteString(log[begin_index:cur_index])
+								key_value_pair[key] = value_content.String()
+							}
+							unified_log.LogFieldsSection = append(unified_log.LogFieldsSection, key_value_pair)
+							search_state = -1
+							key_content.Reset()
+							value_content.Reset()
+						}
+					} else if log_rune_array[cur_index] == '\\' && !is_slash {
+						// 如果前面的不是 slash， 那就说明这是个转义的，要把前面这段先写入content
+						if is_search_for_key {
+							key_content.WriteString(log[begin_index:cur_index])
+						} else {
+							value_content.WriteString(log[begin_index:cur_index])
+						}
+
+						is_slash = true
+						begin_index = cur_index + 1
+					} else {
+						// 其他情况都只需要把is_slash 设为 false 就可以
+						is_slash = false
+					}
+				}
+			}
+			cur_index += 1
+		}
+	}
+	return unified_log
+}
+*/
