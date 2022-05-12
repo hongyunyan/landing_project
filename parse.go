@@ -27,12 +27,6 @@ type UnifiedLog struct {
 	LogFieldsSection  []map[string]string
 }
 
-/*
-logHeaderSection 这边基本可以被认为是固定格式的，除了sourceFile和lineNumber需要判断一下是否是unknown的，别的不需要特殊处理
-logMessageSection，这边一定是个string，但是string可以是带双引号的string，也可以是不带双引号的string，所以要对应做区分，如果是不带双引号的string，那中间不会参杂其他奇怪的特殊符号等，但是如果是双引号字符串，就需要处理其中可能存在的转义字符等\" ) ( [ ],其实有个比较简单的判断方式，就是要到最后一个不带转义的"就可以了
-["abc\"]abc[def]"]
-logFieldsSection 这边则是一个0或者多个map，这边要注意特殊处理=问题，字符串问题同上，
-*/
 // 单纯从头遍历 log 字符串
 func ReadStringOnce(log string) {
 	var pre_index int
@@ -100,6 +94,7 @@ func ParseLogHeaderSection(log string, unified_log *UnifiedLog) int {
 	return begin_index
 }
 
+/*
 // 尝试先把 log 转成 rune 的 array 模式，然后用 index 遍历的方式来做 parse，benchmark 测下来还不如原来的方法
 func ParseLogWithRuneArray(log string) UnifiedLog {
 	var unified_log UnifiedLog = UnifiedLog{
@@ -263,6 +258,7 @@ func ParseLogWithRuneArray(log string) UnifiedLog {
 	}
 	return unified_log
 }
+*/
 
 // 这边用一个从头遍历的方式来进行处理Parse，如果遇到转义，就进行判断，只有 \ 和 " 是需要 额外的转义符号
 func ParseLog(log string) UnifiedLog {
@@ -401,8 +397,13 @@ func ParseLog(log string) UnifiedLog {
 						if item == '"' && !is_slash {
 							// 如果遇到 前面没有转义符号的 "
 							if is_search_for_key {
-								key_content.WriteString(log[begin_index:char_index])
-								key = key_content.String()
+								if key_content.Len() == 0 {
+									key = log[begin_index:char_index]
+								} else {
+									key_content.WriteString(log[begin_index:char_index])
+									key = key_content.String()
+									key_content.Reset()
+								}
 								is_search_for_key = false
 								search_state = 0
 							} else {
@@ -412,11 +413,11 @@ func ParseLog(log string) UnifiedLog {
 								} else {
 									value_content.WriteString(log[begin_index:char_index])
 									key_value_pair[key] = value_content.String()
+									value_content.Reset()
 								}
 								unified_log.LogFieldsSection = append(unified_log.LogFieldsSection, key_value_pair)
 								search_state = -1
-								key_content.Reset()
-								value_content.Reset()
+
 							}
 						} else if item == '\\' && !is_slash {
 							// 如果前面的不是 slash， 那就说明这是个转义的，要把前面这段先写入content
@@ -433,7 +434,7 @@ func ParseLog(log string) UnifiedLog {
 							is_slash = false
 						}
 					} else {
-						// 如果是没有特殊字符的字符串，那只需要识别 ] 就可以了
+						// 如果是没有特殊字符的字符串，那只需要识别 = 或者 ] 就可以了
 						if item == '=' {
 							is_search_for_key = false
 							search_state = 0
@@ -456,7 +457,6 @@ func ParseLog(log string) UnifiedLog {
 
 func main() {
 	var cpuProfile = flag.String("cpuprofile", "", "write cpu profile to file")
-	//var memProfile = flag.String("memprofile", "", "write mem profile to file")
 	flag.Parse()
 	//采样cpu运行状态
 	if *cpuProfile != "" {
@@ -471,7 +471,7 @@ func main() {
 	var i = 1
 	for i < 1000000 {
 		i += 1
-		log_test := "[2018/12/15 14:20:11.015 +08:00] [INFO] [tikv-server.rs:13] [\"TiKV\\\"Started\\\\\"] [ddl_job_id=1] [stack=\"   0: std::sys::imp::backtrace::tracing::imp::unwind_backtrace\n             at /checkout/src/libstd/sys/unix/backtrace/tracing/gcc_s.rs:49\n   1: std::sys_common::backtrace::_print\n             at /checkout/src/libstd/sys_common/backtrace.rs:71\n   2: std::panicking::default_hook::{{closure}}\n             at /checkout/src/libstd/sys_common/backtrace.rs:60\n             at /checkout/src/libstd/panicking.rs:381\"] [error=\"thread 'main' panicked at 'index out of bounds: the len is 3 but the index is 99\"] [\"sql=\"=\"insert into t values (\\\"]This should not break log parsing!\\\")\"]"
+		log_test := "[2018/12/15 14:20:11.015 +08:00] [INFO] [tikv-server.rs:13] [\"TiKV Started\"] [ddl_job_id=1]"
 		ParseLog(log_test)
 	}
 
